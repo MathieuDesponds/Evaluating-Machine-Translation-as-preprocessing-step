@@ -1,3 +1,26 @@
+<<<<<<< HEAD
+import unicodedata
+
+def strip_accents_and_lower(text):
+    """
+    Strip accents from input String.
+
+    :param text: The input string.
+    :type text: String.
+
+    :returns: The processed String.
+    :rtype: String.
+    """
+    try:
+        text = unicode(text, 'utf-8')
+    except (TypeError, NameError): # unicode is a default on python 3 
+        pass
+    text = unicodedata.normalize('NFD', text)
+    text = text.encode('ascii', 'ignore')
+    text = text.decode("utf-8")
+    return str(text.lower())
+    return translated
+=======
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 model_translation = {}
@@ -31,3 +54,4 @@ def translate_fr_en(texts):
         translated.append(tokenizer_trad_fr_en.batch_decode(outputs, skip_special_tokens=True)[0])
     print(len(translated))
     return translated
+>>>>>>> 71e3aaeb4d5cd9759694691f33be2e22bceaf465
