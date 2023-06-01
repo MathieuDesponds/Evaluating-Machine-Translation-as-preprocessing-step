@@ -52,7 +52,8 @@ def get_models_review_classification(data_path, trainers):
 import Levenshtein
 from transformers import pipeline
 from translation import translate_en_fr
-def compute_metrics_QA(start_logits, end_logits, features, examples, need_translation = False, base_answers = None, accept_levenstein = None):
+from helper import strip_accents_and_lower
+def compute_metrics_QA(start_logits, end_logits, features, examples, need_translation = False, base_answers = None, accept_levenstein = None, compare_lower_no_accent = False, translator = None):
     metric = evaluate.load("squad")
     n_best =20
     max_answer_length = 30
@@ -60,14 +61,20 @@ def compute_metrics_QA(start_logits, end_logits, features, examples, need_transl
     for idx, feature in enumerate(features):
         example_to_features[feature["example_id"]].append(idx)
     
+    
+        
     if not need_translation :
         theoretical_answers = [{"id": ex["id"], "answers": ex["answers"]} for ex in examples]
     else :
         theoretical_answers = [{"id": ex["id"], "answers": ex["answers"]} for ex in base_answers]
+    ta = theoretical_answers
+    if compare_lower_no_accent :
+        for ex in theoretical_answers :
+            ex['answers']['text'] = [strip_accents_and_lower(ex['answers']['text'][0])]
     
     predicted_answers = []
-    if need_translation :
-        translator_en_fr = pipeline("translation", 'Helsinki-NLP/opus-mt-en-fr')
+    if need_translation and translator == None :
+        translator = pipeline("translation", 'Helsinki-NLP/opus-mt-en-fr')
     for idx, example in tqdm(enumerate(examples)):
         example_id = example["id"]
         context = example["context"]
@@ -101,19 +108,23 @@ def compute_metrics_QA(start_logits, end_logits, features, examples, need_transl
 
         # Select the answer with the best score
         if len(answers) > 0:
+            
             best_answer = max(answers, key=lambda x: x["logit_score"])
-            if need_translation :
-                best_answer["text"] = translate_en_fr(best_answer["text"], translator_en_fr)[0]
+            ba = best_answer
                 
-                ba = best_answer["text"]
+            if need_translation :
+                best_answer["text"] = translator(best_answer["text"])[0]['translation_text']
+            
+            if compare_lower_no_accent :
+                best_answer['text'] = strip_accents_and_lower(best_answer['text'])
+            
+#             print(best_answer['text'], theoretical_answers[idx]["answers"]['text'][0], ba, ta[idx])
             if accept_levenstein != None :
                 theoretical_answer = theoretical_answers[idx]["answers"]['text'][0]
                 lev_dist = Levenshtein.distance(best_answer['text'], theoretical_answer)
                 if lev_dist <= accept_levenstein :
                     best_answer['text'] = theoretical_answer
                     
-                
-#                 print(lev_dist, best_answer['text'], theoretical_answer, ba)
             predicted_answers.append(
                 {"id": example_id, 
                  "prediction_text":  best_answer["text"],
@@ -217,7 +228,7 @@ def get_models_nli(trainers):
 #######################################################################
 #######################################################################
 #######################################################################
-def get_trainers_paraphrasing(data_path, datasets, langs = ['fr','en']):
+def get_trainers_paraphrasing(datasets,data_path = "/data/desponds/data/Paraphrase/", langs = ['fr','en']):
     metric = evaluate.load("accuracy")
 
     def compute_metrics(eval_pred):
@@ -249,18 +260,18 @@ def get_trainers_paraphrasing(data_path, datasets, langs = ['fr','en']):
     
     models, tokenizer, trainers, training_args = {}, {}, {} , {}
     for lang in langs :
-        tokenizer[lang] = AutoTokenizer.from_pretrained(model_name[lang])
+        tokenizer[lang] = AutoTokenizer.from_pretrained(model_name[lang], cache_dir="/data/desponds/.cache")
         models[lang] = AutoModelForSequenceClassification.from_pretrained(model_name[lang], num_labels=2, cache_dir="/data/desponds/.cache")
         training_args[lang] = get_training_args(lang)
         trainers[lang] = get_trainer(datasets[lang], lang)
     return trainers
 
-def get_models_paraphrasing(trainers):
+def get_models_paraphrasing(trainers, datapath = "/data/desponds/data/Paraphrase"):
     models = {}
     if 'fr' in trainers :
-        trainers['fr'].train("/data/desponds/data/Paraphrase/trainer_fr/checkpoint-4632")
+        trainers['fr'].train(f"{datapath}/trainer_fr/checkpoint-4632")
     if 'en' in trainers :
-        trainers['en'].train("/data/desponds/data/Paraphrase/trainer_en/checkpoint-4632")
+        trainers['en'].train(f"{datapath}/trainer_en/checkpoint-4632")
     return trainers
 
 #######################################################################
@@ -268,21 +279,17 @@ def get_models_paraphrasing(trainers):
 #######################################################################
 
 
-def get_trainers_summarization(data_path, tokenized, langs = ['fr','en'], model_name = "google/mt5-base" ):
+def get_trainers_summarization(data_path, tokenized, langs = ['fr','en'], model_name = "google/mt5-small" ):
     rouge = evaluate.load("rouge")
 
     def compute_metrics(eval_pred):
         predictions, labels = eval_pred
-        print(predictions, labels)
         decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
         labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
         
-        print(decoded_preds, labels)
         decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
         
         result = rouge.compute(predictions=decoded_preds, references=decoded_labels, use_aggregator =True)
-        print(decoded_labels)
-        print(result)
         prediction_lens = [np.count_nonzero(pred != tokenizer.pad_token_id) for pred in predictions]
         result["gen_len"] = np.mean(prediction_lens)
 
@@ -294,20 +301,23 @@ def get_trainers_summarization(data_path, tokenized, langs = ['fr','en'], model_
             output_dir= data_path+ 'trainer_'+lang,
             evaluation_strategy="epoch",
             learning_rate=2e-5,
-            per_device_train_batch_size=2,
-            per_device_eval_batch_size=2,
+            per_device_train_batch_size=4,
+            per_device_eval_batch_size=4,
             weight_decay=0.01,
             save_total_limit=3,
-            num_train_epochs=1,#3,
+            num_train_epochs=3,
             predict_with_generate=True,
-            fp16=True,
+            save_strategy = 'epoch',
+            fp16=False,
+            push_to_hub=False,
+            use_mps_device=False
         )
     def get_trainer(lang):
         return  Seq2SeqTrainer(
             model=model,
             args=training_args[lang],
-            train_dataset=tokenized[lang]["train"].select([0,1,2,3,4,5]),
-            eval_dataset=tokenized[lang]["test"].select([0,1,2,3,4,5]),
+            train_dataset=tokenized[lang]["train"],
+            eval_dataset=tokenized[lang]["test"],
             tokenizer=tokenizer,
             data_collator=data_collator,
             compute_metrics=compute_metrics,
@@ -320,4 +330,11 @@ def get_trainers_summarization(data_path, tokenized, langs = ['fr','en'], model_
     for lang in langs :
         training_args[lang] = get_training_args(lang)
         trainers[lang] = get_trainer(lang)
+    return trainers
+def get_models_summarization(trainers):
+    models = {}
+    if 'fr' in trainers :
+        trainers['fr'].train("/data/desponds/data/Summarization/trainer_fr/checkpoint-13029")
+    if 'en' in trainers :
+        trainers['en'].train("/data/desponds/data/Summarization/trainer_en/checkpoint-28656")
     return trainers

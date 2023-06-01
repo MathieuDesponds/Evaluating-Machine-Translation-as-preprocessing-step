@@ -181,7 +181,7 @@ def preprocessing_nli(dataset_name = 'xnli', max_length = 256 ):
         tokenized[lang] = tokenized[lang].remove_columns(['premise', 'hypothesis'])  
     return datasets, tokenized
 
-def tokenize_nli(example, tokenizer, max_length):
+def tokenize_nli(example, tokenizer, max_length=256):
     out = tokenizer(example['premise'], example['hypothesis'], max_length = max_length, padding = 'max_length',
         truncation = 'only_first')
     out['label'] = example['label']  
@@ -189,17 +189,18 @@ def tokenize_nli(example, tokenizer, max_length):
 #######################################################################
 #######################################################################
 #######################################################################
-def preprocessing_paraphrasing(lang, dataset_name = 'paws-x', with_label = False ):
-    
-    dataset = load_dataset(dataset_name, lang, cache_dir="/data/desponds/.cache")
-    
-    tokenizer = AutoTokenizer.from_pretrained(model_name[lang], cache_dir="/data/desponds/.cache")
-                                  
-    tokenized = dataset.map(lambda ex : tokenize_paraphrasing(ex, lang, tokenizer, with_label))  
-    tokenized = tokenized.remove_columns(['sentence1', 'sentence2'])
+def preprocessing_paraphrasing(langs = ['fr','en'], dataset_name = 'paws-x', with_label = False ):
+    datasets, tokenizer, tokenized = {}, {}, {}
+    for lang in langs :
+        datasets[lang] = load_dataset(dataset_name, lang, cache_dir="/data/desponds/.cache")
 
-    return tokenized
-def tokenize_paraphrasing(example, lang, tokenizer, with_label, MAX_LENGTH = 80, truncation ='only_first'):
+        tokenizer[lang] = AutoTokenizer.from_pretrained(model_name[lang], cache_dir="/data/desponds/.cache")
+
+        tokenized[lang] = datasets[lang].map(lambda ex : tokenize_paraphrasing(ex, tokenizer[lang], with_label))  
+        tokenized[lang] = tokenized[lang].remove_columns(['sentence1', 'sentence2'])
+
+    return datasets, tokenized
+def tokenize_paraphrasing(example, tokenizer, with_label, MAX_LENGTH = 80, truncation ='only_first'):
     out = tokenizer(example['sentence1'], example['sentence2'], max_length = MAX_LENGTH, padding = 'max_length', truncation = truncation)
     if with_label :
         out['label'] = example['label']  
@@ -209,43 +210,44 @@ def tokenize_paraphrasing(example, lang, tokenizer, with_label, MAX_LENGTH = 80,
 #######################################################################
 #######################################################################
 #######################################################################
-def preprocessing_summarization(dataset_name = "wiki_lingua", model_name = "google/mt5-base", max_length_text = 512): 
-    def prepare_dataset(dataset):
-        new_dataset = {}
-        for sep in dataset:
-            outputs = []
-            for entry in dataset[sep] :
-                titles = entry['article']['section_name']
-                documents = entry['article']['document']
-                summaries = entry['article']['summary']
-                for i in range(len(documents)):
-                    outputs.append({
-                        'summary': summaries[i],
-                        'text': documents[i],
-                        'title':titles[i]
-                    })
-            new_dataset[sep] =  Dataset.from_pandas(pd.DataFrame(data=outputs))
-        return DatasetDict(new_dataset)
-    
-    def preprocess_function(examples, prefix = "summarize: "):
-        inputs = [prefix + doc for doc in examples["text"]]
+def preprocess_function_summarization(examples, tokenizer, prefix = "summarize: ", max_length_text = 512):
+        inputs = [prefix + doc for doc in examples["source"]]
         model_inputs = tokenizer(inputs, max_length=max_length_text, truncation=True)
 
-        labels = tokenizer(text_target=examples["summary"], max_length=128, truncation=True)
+        labels = tokenizer(text_target=examples["target"], max_length=128, truncation=True)
 
         model_inputs["labels"] = labels["input_ids"]
         return model_inputs
+def preprocessing_summarization(dataset_name = "GEM/wiki_lingua", model_name = "google/mt5-base", max_length_text = 512): 
+#     def prepare_dataset(dataset):
+#         new_dataset = {}
+#         for sep in dataset:
+#             outputs = []
+#             for entry in dataset[sep] :
+#                 titles = entry['article']['section_name']
+#                 documents = entry['article']['document']
+#                 summaries = entry['article']['summary']
+#                 for i in range(len(documents)):
+#                     outputs.append({
+#                         'summary': summaries[i],
+#                         'text': documents[i],
+#                         'title':titles[i]
+#                     })
+#             new_dataset[sep] =  Dataset.from_pandas(pd.DataFrame(data=outputs))
+#         return DatasetDict(new_dataset)
+    
+    
 
     
     
     datasets, tokenized = {}, {}
-    datasets['fr'] = load_dataset(dataset_name, 'french', cache_dir="/data/desponds/.cache")
-    datasets['en'] = load_dataset(dataset_name, 'english', cache_dir="/data/desponds/.cache")
+    datasets['fr'] = load_dataset(dataset_name, 'fr', split = 'train', cache_dir="/data/desponds/.cache")
+    datasets['en'] = load_dataset(dataset_name, 'en', split = 'train', cache_dir="/data/desponds/.cache")
     
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     
     for lang in ['fr', 'en'] :
-        datasets[lang] = datasets[lang]['train'].train_test_split(test_size=0.2)
-        datasets[lang] = prepare_dataset(datasets[lang])
-        tokenized[lang] = datasets[lang].map(preprocess_function, batched=True)
+        datasets[lang] = datasets[lang].train_test_split(test_size=0.2)
+#         datasets[lang] = prepare_dataset(datasets[lang])
+        tokenized[lang] = datasets[lang].map(lambda exemples : preprocess_function_summarization(examples, tokenizer), batched=True)
     return datasets, tokenized 
